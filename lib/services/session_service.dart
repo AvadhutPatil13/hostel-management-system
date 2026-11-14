@@ -44,5 +44,47 @@ class SessionService {
     await prefs.remove(_tokenKey);
     await prefs.remove(_userKey);
   }
-}
 
+  /// Alias for [clear] with a name that reads better at call sites like a
+  /// "Logout" button. Behaves identically — clears the local session and,
+  /// when Firebase is the active backend, signs out of Firebase Auth too.
+  static Future<void> logout() => clear();
+
+  /// Updates the signed-in user's password.
+  ///
+  /// Only supported when `BackendConfig.useFirebase` is true and the
+  /// current user signed in with an email/password credential — Firebase
+  /// requires re-authentication with the current password before it will
+  /// allow a password change, so that happens first.
+  ///
+  /// Throws a [StateError] when Firebase isn't the active backend or no
+  /// user is signed in, and rethrows any [FirebaseAuthException] from
+  /// re-authentication or the update itself (e.g. wrong current password,
+  /// weak new password) so the caller can show a specific message.
+  static Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    if (!BackendConfig.useFirebase) {
+      throw StateError(
+        'Password changes require the Firebase backend to be enabled. '
+        'Connect this action to your authentication service.',
+      );
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    final email = user?.email;
+
+    if (user == null || email == null) {
+      throw StateError('No signed-in user found.');
+    }
+
+    final credential = EmailAuthProvider.credential(
+      email: email,
+      password: currentPassword,
+    );
+
+    await user.reauthenticateWithCredential(credential);
+    await user.updatePassword(newPassword);
+  }
+}

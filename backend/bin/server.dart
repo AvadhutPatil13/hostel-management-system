@@ -53,8 +53,17 @@ Future<void> main() async {
     ..get('/api/my/complaints', _myComplaintsHandler)
     ..get('/api/my/checkins', _myCheckinsHandler)
     ..get('/api/my/room', _myRoomHandler)
+    ..get('/api/rooms/available', _availableRoomsHandler)
     ..get('/api/admin/users', _adminUsersHandler)
+    ..post('/api/admin/users', _adminCreateStudentHandler)
     ..patch('/api/admin/users/<id>', _adminUpdateUserHandler)
+    ..get('/api/admin/activity', _adminActivityHandler)
+    ..get('/api/admin/dues', _adminDuesHandler)
+    ..post('/api/admin/dues', _adminCreateDueHandler)
+    ..patch('/api/admin/dues/<id>', _adminUpdateDueHandler)
+    ..delete('/api/admin/dues/<id>', _adminRemoveDueHandler)
+    ..post('/api/admin/dues/monthly', _adminGenerateMonthlyDuesHandler)
+    ..post('/api/admin/dues/<id>/reminder', _adminRecordFeeReminderHandler)
     ..get('/api/admin/dashboard', _adminDashboardHandler)
     ..get('/api/admin/rooms', _adminRoomsListHandler)
     ..post('/api/admin/rooms', _adminRoomsCreateHandler)
@@ -64,7 +73,8 @@ Future<void> main() async {
     ..patch('/api/admin/complaints/<id>', _adminComplaintsUpdateHandler)
     ..get('/api/admin/checkins', _adminCheckinsListHandler)
     ..post('/api/admin/checkin', _adminCheckInHandler)
-    ..post('/api/admin/checkout', _adminCheckOutHandler);
+    ..post('/api/admin/checkout', _adminCheckOutHandler)
+    ..post('/api/admin/swap-rooms', _adminSwapRoomsHandler);
 
   final handler = Pipeline()
       .addMiddleware(logRequests())
@@ -122,6 +132,26 @@ Future<Response> _registerHandler(Request request) async {
 
   users.add(user);
   db['users'] = users;
+  final now = DateTime.now();
+  final feeMonth = '${now.year}-${now.month.toString().padLeft(2, '0')}';
+  final dues = List<Map<String, dynamic>>.from(db['dues'] as List);
+  dues.add({
+    'id': _id(),
+    'studentId': user['id'],
+    'student': name,
+    'room': '',
+    'amount': 5000,
+    'amountPaid': 0,
+    'remainingAmount': 5000,
+    'paid': false,
+    'status': 'pending',
+    'feeType': 'Hostel Fee',
+    'feeMonth': feeMonth,
+    'dueDate': DateTime(now.year, now.month + 1, 10).toIso8601String(),
+    'createdAt': now.toIso8601String(),
+    'updatedAt': now.toIso8601String(),
+  });
+  db['dues'] = dues;
   await _writeDb(db);
 
   final token = _tokenForUser(user);
@@ -267,9 +297,91 @@ Future<Response> _adminUsersHandler(Request request) async {
   }
 }
 
+Future<Response> _adminCreateStudentHandler(Request request) async {
+  try {
+    final adminId = await _requireAdmin(request);
+    final body = await _readJson(request);
+    final name = _requiredString(body, 'name');
+    final email = _requiredString(body, 'email').toLowerCase();
+    final password = _requiredString(body, 'password');
+    final gender = _requiredString(body, 'gender');
+    final age = _requiredString(body, 'age');
+    final phone = _requiredString(body, 'phone');
+    final address = _requiredString(body, 'address');
+    final parentName = _requiredString(body, 'parentName');
+    final parentPhone = _requiredString(body, 'parentPhone');
+    final parentOccupation = _requiredString(body, 'parentOccupation');
+
+    if (password.length < 6) {
+      return _error('Password must contain at least 6 characters', HttpStatus.badRequest);
+    }
+
+    final db = await _readDb();
+    final users = List<Map<String, dynamic>>.from(db['users'] as List);
+    if (users.any((user) => user['email']?.toString().toLowerCase() == email)) {
+      return _error('User already exists with this email', HttpStatus.conflict);
+    }
+
+    final now = DateTime.now();
+    final student = <String, dynamic>{
+      'id': _id(),
+      'name': name,
+      'email': email,
+      'passwordHash': _hashPassword(password),
+      'gender': gender,
+      'age': age,
+      'phone': phone,
+      'address': address,
+      'parentName': parentName,
+      'parentPhone': parentPhone,
+      'parentOccupation': parentOccupation,
+      'role': 'student',
+      'createdAt': now.toIso8601String(),
+    };
+    users.add(student);
+    db['users'] = users;
+
+    final dues = List<Map<String, dynamic>>.from(db['dues'] as List);
+    final feeMonth =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}';
+    dues.add({
+      'id': _id(),
+      'studentId': student['id'],
+      'student': name,
+      'room': '',
+      'amount': 5000,
+      'amountPaid': 0,
+      'remainingAmount': 5000,
+      'paid': false,
+      'status': 'pending',
+      'feeType': 'Hostel Fee',
+      'feeMonth': feeMonth,
+      'dueDate': DateTime(now.year, now.month + 1, 10).toIso8601String(),
+      'createdAt': now.toIso8601String(),
+      'updatedAt': now.toIso8601String(),
+    });
+    db['dues'] = dues;
+    _recordActivity(
+      db,
+      adminId,
+      'student.created',
+      'student',
+      student['id'].toString(),
+      'Added student $name and assigned the initial ₹5000 hostel fee.',
+    );
+    await _writeDb(db);
+    return _json(
+      {'user': _safeUser(student)},
+      statusCode: HttpStatus.created,
+    );
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
 Future<Response> _adminUpdateUserHandler(Request request, String id) async {
   try {
-    await _requireAdmin(request);
+    final adminId = await _requireAdmin(request);
     final body = await _readJson(request);
 
     final db = await _readDb();
@@ -291,14 +403,316 @@ Future<Response> _adminUpdateUserHandler(Request request, String id) async {
       user['phone'] = body['phone']?.toString().trim() ?? '';
     }
     if (body.containsKey('name')) {
-      user['name'] = body['name']?.toString().trim() ?? '';
+      final name = body['name']?.toString().trim() ?? '';
+      if (name.isEmpty) return _error('Name cannot be empty', HttpStatus.badRequest);
+      user['name'] = name;
+    }
+    for (final field in const [
+      'email',
+      'gender',
+      'age',
+      'address',
+      'parentName',
+      'parentPhone',
+      'parentOccupation',
+    ]) {
+      if (body.containsKey(field)) {
+        user[field] = body[field]?.toString().trim() ?? '';
+      }
+    }
+    if (body.containsKey('email')) {
+      final email = user['email']?.toString().toLowerCase() ?? '';
+      final duplicate = users.any(
+        (other) =>
+            other['id']?.toString() != id &&
+            other['email']?.toString().toLowerCase() == email,
+      );
+      if (email.isEmpty || duplicate) {
+        return _error('Email is empty or already in use', HttpStatus.conflict);
+      }
+      user['email'] = email;
     }
 
     users[index] = user;
     db['users'] = users;
+    _recordActivity(
+      db,
+      adminId,
+      'student.updated',
+      'student',
+      id,
+      'Updated student ${user['name']}.',
+    );
     await _writeDb(db);
 
     return _json({'user': _safeUser(user)});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminActivityHandler(Request request) async {
+  try {
+    await _requireAdmin(request);
+    final db = await _readDb();
+    final logs = List<Map<String, dynamic>>.from(db['activityLogs'] as List);
+    logs.sort((a, b) =>
+        (b['createdAt']?.toString() ?? '').compareTo(
+          a['createdAt']?.toString() ?? '',
+        ));
+    return _json({'logs': logs});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminDuesHandler(Request request) async {
+  try {
+    await _requireAdmin(request);
+    final db = await _readDb();
+    final users = List<Map<String, dynamic>>.from(db['users'] as List);
+    final usersById = {
+      for (final user in users) user['id']?.toString() ?? '': user,
+    };
+    final dues = List<Map<String, dynamic>>.from(db['dues'] as List)
+      ..sort((a, b) => (b['createdAt']?.toString() ?? '').compareTo(
+        a['createdAt']?.toString() ?? '',
+      ));
+    final enriched = dues.map((due) {
+      final student = usersById[due['studentId']?.toString() ?? ''];
+      return {
+        ...due,
+        'parentName': student?['parentName'],
+        'parentPhone': student?['parentPhone'],
+        'parentOccupation': student?['parentOccupation'],
+      };
+    }).toList();
+    return _json({'dues': enriched});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminCreateDueHandler(Request request) async {
+  try {
+    final adminId = await _requireAdmin(request);
+    final body = await _readJson(request);
+    final studentId = body['studentId']?.toString().trim() ?? '';
+    final amount = int.tryParse(body['amount']?.toString() ?? '') ?? 0;
+    final studentName = body['student']?.toString().trim() ?? '';
+    final room = body['room']?.toString().trim() ?? '';
+    final feeType = body['feeType']?.toString().trim() ?? '';
+    if (amount <= 0 || studentName.isEmpty || feeType.isEmpty) {
+      return _error('Student, fee type and a positive amount are required', HttpStatus.badRequest);
+    }
+
+    final db = await _readDb();
+    final users = List<Map<String, dynamic>>.from(db['users'] as List);
+    final student = studentId.isEmpty
+        ? null
+        : users.cast<Map<String, dynamic>?>().firstWhere(
+              (user) =>
+                  user != null && user['id']?.toString() == studentId,
+              orElse: () => null,
+            );
+    if (studentId.isNotEmpty &&
+        (student == null || student['role']?.toString() != 'student')) {
+      return _error('Selected student was not found', HttpStatus.notFound);
+    }
+    final now = DateTime.now();
+    final due = <String, dynamic>{
+      'id': _id(),
+      'studentId': studentId.isEmpty ? null : studentId,
+      'student': student?['name']?.toString() ?? studentName,
+      'room': room,
+      'amount': amount,
+      'amountPaid': 0,
+      'remainingAmount': amount,
+      'paid': false,
+      'status': 'pending',
+      'feeType': feeType,
+      'dueDate': body['dueDate'],
+      'feeMonth': body['feeMonth'],
+      'createdAt': now.toIso8601String(),
+      'updatedAt': now.toIso8601String(),
+    };
+    final dues = List<Map<String, dynamic>>.from(db['dues'] as List)..add(due);
+    db['dues'] = dues;
+    _recordActivity(
+      db,
+      adminId,
+      'fees.created',
+      'fee',
+      due['id'].toString(),
+      'Created a $feeType fee of ₹$amount for ${due['student']}.',
+    );
+    await _writeDb(db);
+    return _json({'due': due}, statusCode: HttpStatus.created);
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminUpdateDueHandler(Request request, String id) async {
+  try {
+    final adminId = await _requireAdmin(request);
+    final body = await _readJson(request);
+    if (body['paid'] is! bool) {
+      return _error('A valid paid status is required', HttpStatus.badRequest);
+    }
+    final db = await _readDb();
+    final dues = List<Map<String, dynamic>>.from(db['dues'] as List);
+    final index = dues.indexWhere((due) => due['id']?.toString() == id);
+    if (index < 0) return _error('Fee record not found', HttpStatus.notFound);
+    final due = Map<String, dynamic>.from(dues[index]);
+    final amount = int.tryParse(due['amount']?.toString() ?? '') ?? 0;
+    final paid = body['paid'] as bool;
+    due['paid'] = paid;
+    due['amountPaid'] = paid ? amount : 0;
+    due['remainingAmount'] = paid ? 0 : amount;
+    due['status'] = paid ? 'paid' : 'pending';
+    due['paidAt'] = paid ? DateTime.now().toIso8601String() : null;
+    due['updatedAt'] = DateTime.now().toIso8601String();
+    dues[index] = due;
+    db['dues'] = dues;
+    _recordActivity(
+      db,
+      adminId,
+      paid ? 'fees.payment_recorded' : 'fees.payment_reversed',
+      'fee',
+      id,
+      '${paid ? 'Marked' : 'Reversed'} fee for ${due['student']} '
+          '${paid ? 'as paid' : 'as unpaid'}.',
+    );
+    await _writeDb(db);
+    return _json({'due': due});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminRemoveDueHandler(Request request, String id) async {
+  try {
+    final adminId = await _requireAdmin(request);
+    final db = await _readDb();
+    final dues = List<Map<String, dynamic>>.from(db['dues'] as List);
+    final due = dues.cast<Map<String, dynamic>?>().firstWhere(
+          (item) => item != null && item['id']?.toString() == id,
+          orElse: () => null,
+        );
+    if (due == null) return _error('Fee record not found', HttpStatus.notFound);
+    dues.removeWhere((item) => item['id']?.toString() == id);
+    db['dues'] = dues;
+    _recordActivity(
+      db,
+      adminId,
+      'fees.removed',
+      'fee',
+      id,
+      'Removed fee record for ${due['student']}.',
+    );
+    await _writeDb(db);
+    return _json({'removed': true});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminGenerateMonthlyDuesHandler(Request request) async {
+  try {
+    final adminId = await _requireAdmin(request);
+    final db = await _readDb();
+    final users = List<Map<String, dynamic>>.from(db['users'] as List);
+    final dues = List<Map<String, dynamic>>.from(db['dues'] as List);
+    final now = DateTime.now();
+    final feeMonth = '${now.year}-${now.month.toString().padLeft(2, '0')}';
+    var createdCount = 0;
+
+    for (final student in users.where(
+      (user) => (user['role']?.toString() ?? 'student') == 'student',
+    )) {
+      final studentId = student['id']?.toString() ?? '';
+      if (dues.any((due) =>
+          due['studentId']?.toString() == studentId &&
+          due['feeMonth']?.toString() == feeMonth &&
+          due['feeType']?.toString() == 'Hostel Fee')) {
+        continue;
+      }
+      dues.add({
+        'id': _id(),
+        'studentId': studentId,
+        'student': student['name']?.toString() ?? '',
+        'room': '',
+        'amount': 5000,
+        'amountPaid': 0,
+        'remainingAmount': 5000,
+        'paid': false,
+        'status': 'pending',
+        'feeType': 'Hostel Fee',
+        'feeMonth': feeMonth,
+        'dueDate': DateTime(now.year, now.month + 1, 10).toIso8601String(),
+        'createdAt': now.toIso8601String(),
+        'updatedAt': now.toIso8601String(),
+      });
+      createdCount++;
+    }
+    db['dues'] = dues;
+    _recordActivity(
+      db,
+      adminId,
+      'fees.monthly_generated',
+      'fees',
+      feeMonth,
+      'Generated $createdCount monthly hostel fee record(s) for $feeMonth.',
+    );
+    await _writeDb(db);
+    return _json({'createdCount': createdCount, 'feeMonth': feeMonth});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminRecordFeeReminderHandler(
+  Request request,
+  String id,
+) async {
+  try {
+    final adminId = await _requireAdmin(request);
+    final db = await _readDb();
+    final dues = List<Map<String, dynamic>>.from(db['dues'] as List);
+    final dueIndex = dues.indexWhere((due) => due['id']?.toString() == id);
+    if (dueIndex < 0) {
+      return _error('Fee record not found', HttpStatus.notFound);
+    }
+
+    final due = Map<String, dynamic>.from(dues[dueIndex]);
+    final users = List<Map<String, dynamic>>.from(db['users'] as List);
+    final student = users.cast<Map<String, dynamic>?>().firstWhere(
+          (user) =>
+              user != null &&
+              user['id']?.toString() == due['studentId']?.toString(),
+          orElse: () => null,
+        );
+    final parentPhone = student?['parentPhone']?.toString().trim() ?? '';
+    if (parentPhone.isEmpty) {
+      return _error(
+        'No parent phone is saved for this student',
+        HttpStatus.conflict,
+      );
+    }
+    due['lastReminderAt'] = DateTime.now().toIso8601String();
+    dues[dueIndex] = due;
+    db['dues'] = dues;
+    _recordActivity(
+      db,
+      adminId,
+      'fees.parent_reminder',
+      'fee',
+      id,
+      'Opened a fee reminder for ${due['student']} and their parent.',
+    );
+    await _writeDb(db);
+    return _json({'due': due, 'parentPhone': parentPhone});
   } on _AuthException catch (e) {
     return _error(e.message, e.statusCode);
   }
@@ -350,9 +764,28 @@ Future<Response> _adminRoomsListHandler(Request request) async {
   }
 }
 
+Future<Response> _availableRoomsHandler(Request request) async {
+  try {
+    _requireAuthUserId(request);
+    final db = await _readDb();
+    final rooms = List<Map<String, dynamic>>.from(db['rooms'] as List)
+        .where((room) {
+          final status = room['status']?.toString().toLowerCase() ?? '';
+          final capacity = int.tryParse(room['capacity']?.toString() ?? '') ?? 0;
+          final occupied =
+              int.tryParse(room['occupiedCount']?.toString() ?? '') ?? 0;
+          return status != 'maintenance' && capacity > occupied;
+        })
+        .toList();
+    return _json({'rooms': rooms});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  }
+}
+
 Future<Response> _adminRoomsCreateHandler(Request request) async {
   try {
-    await _requireAdmin(request);
+    final adminId = await _requireAdmin(request);
     final body = await _readJson(request);
 
     final building = _requiredString(body, 'building');
@@ -367,7 +800,7 @@ Future<Response> _adminRoomsCreateHandler(Request request) async {
     final db = await _readDb();
     final rooms = List<Map<String, dynamic>>.from(db['rooms'] as List);
 
-    rooms.add({
+    final room = {
       'id': _id(),
       'building': building,
       'floor': floor,
@@ -377,9 +810,18 @@ Future<Response> _adminRoomsCreateHandler(Request request) async {
       'type': type,
       'status': status,
       'createdAt': DateTime.now().toIso8601String(),
-    });
+    };
+    rooms.add(room);
 
     db['rooms'] = rooms;
+    _recordActivity(
+      db,
+      adminId,
+      'room.created',
+      'room',
+      room['id'].toString(),
+      'Created room $roomNo in $building.',
+    );
     await _writeDb(db);
     return _json({'rooms': rooms}, statusCode: HttpStatus.created);
   } on _AuthException catch (e) {
@@ -389,7 +831,7 @@ Future<Response> _adminRoomsCreateHandler(Request request) async {
 
 Future<Response> _adminRoomsUpdateHandler(Request request, String id) async {
   try {
-    await _requireAdmin(request);
+    final adminId = await _requireAdmin(request);
     final body = await _readJson(request);
 
     final db = await _readDb();
@@ -411,6 +853,14 @@ Future<Response> _adminRoomsUpdateHandler(Request request, String id) async {
 
     rooms[index] = room;
     db['rooms'] = rooms;
+    _recordActivity(
+      db,
+      adminId,
+      'room.updated',
+      'room',
+      id,
+      'Updated room ${room['roomNo']}.',
+    );
     await _writeDb(db);
     return _json({'room': room});
   } on _AuthException catch (e) {
@@ -546,7 +996,7 @@ Future<Response> _adminComplaintsListHandler(Request request) async {
 
 Future<Response> _adminComplaintsUpdateHandler(Request request, String id) async {
   try {
-    await _requireAdmin(request);
+    final adminId = await _requireAdmin(request);
     final body = await _readJson(request);
     final status = body['status']?.toString().trim().toLowerCase();
     if (status == null || status.isEmpty) {
@@ -565,6 +1015,14 @@ Future<Response> _adminComplaintsUpdateHandler(Request request, String id) async
     }
     complaints[index] = complaint;
     db['complaints'] = complaints;
+    _recordActivity(
+      db,
+      adminId,
+      'complaint.status_updated',
+      'complaint',
+      id,
+      'Changed complaint status to $status.',
+    );
     await _writeDb(db);
     return _json({'complaint': complaint});
   } on _AuthException catch (e) {
@@ -604,7 +1062,7 @@ Future<Response> _adminCheckinsListHandler(Request request) async {
 
 Future<Response> _adminCheckInHandler(Request request) async {
   try {
-    await _requireAdmin(request);
+    final adminId = await _requireAdmin(request);
     final body = await _readJson(request);
     final userId = _requiredString(body, 'userId');
     final roomId = _requiredString(body, 'roomId');
@@ -652,6 +1110,14 @@ Future<Response> _adminCheckInHandler(Request request) async {
 
     db['checkins'] = checkins;
     db['rooms'] = rooms;
+    _recordActivity(
+      db,
+      adminId,
+      'room.checkin',
+      'student',
+      userId,
+      'Checked in ${user['name']} to room ${room['roomNo'] ?? roomId}.',
+    );
     await _writeDb(db);
     return _json({'checkin': checkin}, statusCode: HttpStatus.created);
   } on _AuthException catch (e) {
@@ -661,7 +1127,7 @@ Future<Response> _adminCheckInHandler(Request request) async {
 
 Future<Response> _adminCheckOutHandler(Request request) async {
   try {
-    await _requireAdmin(request);
+    final adminId = await _requireAdmin(request);
     final body = await _readJson(request);
     final checkinId = _requiredString(body, 'checkinId');
 
@@ -690,10 +1156,90 @@ Future<Response> _adminCheckOutHandler(Request request) async {
 
     db['checkins'] = checkins;
     db['rooms'] = rooms;
+    _recordActivity(
+      db,
+      adminId,
+      'room.checkout',
+      'student',
+      checkin['userId']?.toString() ?? '',
+      'Checked out student ${checkin['userId']}.',
+    );
     await _writeDb(db);
     return _json({'checkin': checkin});
   } on _AuthException catch (e) {
     return _error(e.message, e.statusCode);
+  }
+}
+
+Future<Response> _adminSwapRoomsHandler(Request request) async {
+  try {
+    final adminId = await _requireAdmin(request);
+    final body = await _readJson(request);
+    final firstId = _requiredString(body, 'firstCheckinId');
+    final secondId = _requiredString(body, 'secondCheckinId');
+    if (firstId == secondId) {
+      return _error('Select two different students', HttpStatus.badRequest);
+    }
+
+    final db = await _readDb();
+    final users = List<Map<String, dynamic>>.from(db['users'] as List);
+    final rooms = List<Map<String, dynamic>>.from(db['rooms'] as List);
+    final checkins = List<Map<String, dynamic>>.from(db['checkins'] as List);
+    final firstIndex = checkins.indexWhere((item) => item['id']?.toString() == firstId);
+    final secondIndex = checkins.indexWhere((item) => item['id']?.toString() == secondId);
+    if (firstIndex < 0 || secondIndex < 0) {
+      return _error('Check-in not found', HttpStatus.notFound);
+    }
+
+    final first = Map<String, dynamic>.from(checkins[firstIndex]);
+    final second = Map<String, dynamic>.from(checkins[secondIndex]);
+    if ((first['checkOutAt']?.toString() ?? '').isNotEmpty ||
+        (second['checkOutAt']?.toString() ?? '').isNotEmpty) {
+      return _error('Both students must be checked in', HttpStatus.conflict);
+    }
+    final firstRoomId = first['roomId']?.toString() ?? '';
+    final secondRoomId = second['roomId']?.toString() ?? '';
+    if (firstRoomId.isEmpty || secondRoomId.isEmpty || firstRoomId == secondRoomId) {
+      return _error('Students must be in different rooms', HttpStatus.conflict);
+    }
+
+    final firstRoom = rooms.firstWhere((room) => room['id']?.toString() == firstRoomId);
+    final secondRoom = rooms.firstWhere((room) => room['id']?.toString() == secondRoomId);
+    final firstStudent = users.firstWhere(
+      (user) => user['id']?.toString() == first['userId']?.toString(),
+    );
+    final secondStudent = users.firstWhere(
+      (user) => user['id']?.toString() == second['userId']?.toString(),
+    );
+
+    first['roomId'] = secondRoomId;
+    second['roomId'] = firstRoomId;
+    checkins[firstIndex] = first;
+    checkins[secondIndex] = second;
+    for (final student in users) {
+      if (student['id']?.toString() == first['userId']?.toString()) {
+        student['roomId'] = secondRoomId;
+      } else if (student['id']?.toString() == second['userId']?.toString()) {
+        student['roomId'] = firstRoomId;
+      }
+    }
+    db['checkins'] = checkins;
+    db['users'] = users;
+    _recordActivity(
+      db,
+      adminId,
+      'room.students_swapped',
+      'room',
+      '$firstRoomId:$secondRoomId',
+      'Swapped ${firstStudent['name']} (room ${firstRoom['roomNo']}) with '
+          '${secondStudent['name']} (room ${secondRoom['roomNo']}).',
+    );
+    await _writeDb(db);
+    return _json({'checkins': [first, second]});
+  } on _AuthException catch (e) {
+    return _error(e.message, e.statusCode);
+  } on StateError {
+    return _error('Room or student record not found', HttpStatus.notFound);
   }
 }
 
@@ -811,8 +1357,39 @@ Map<String, dynamic> _safeUser(Map<String, dynamic> user) {
     'gender': user['gender'],
     'age': user['age'],
     'phone': user['phone'],
+    'address': user['address'],
+    'parentName': user['parentName'],
+    'parentPhone': user['parentPhone'],
+    'parentOccupation': user['parentOccupation'],
     'role': user['role']?.toString() ?? 'student',
   };
+}
+
+void _recordActivity(
+  Map<String, dynamic> db,
+  String adminId,
+  String action,
+  String entity,
+  String entityId,
+  String description,
+) {
+  final users = List<Map<String, dynamic>>.from(db['users'] as List);
+  final admin = users.cast<Map<String, dynamic>?>().firstWhere(
+        (user) => user != null && user['id']?.toString() == adminId,
+        orElse: () => null,
+      );
+  final logs = List<Map<String, dynamic>>.from(db['activityLogs'] as List);
+  logs.add({
+    'id': _id(),
+    'actorId': adminId,
+    'actorName': admin?['name']?.toString() ?? 'Admin',
+    'action': action,
+    'entity': entity,
+    'entityId': entityId,
+    'description': description,
+    'createdAt': DateTime.now().toIso8601String(),
+  });
+  db['activityLogs'] = logs;
 }
 
 String _id() => DateTime.now().microsecondsSinceEpoch.toString();
@@ -835,6 +1412,8 @@ Future<void> _migrateDb() async {
   ensureList('rooms');
   ensureList('complaints');
   ensureList('checkins');
+  ensureList('dues');
+  ensureList('activityLogs');
 
   final users = List<Map<String, dynamic>>.from(db['users'] as List);
   for (var i = 0; i < users.length; i++) {
@@ -900,7 +1479,7 @@ String _requireAuthUserId(Request request) {
   return sub;
 }
 
-Future<void> _requireAdmin(Request request) async {
+Future<String> _requireAdmin(Request request) async {
   final userId = _requireAuthUserId(request);
   final db = await _readDb();
   final users = List<Map<String, dynamic>>.from(db['users'] as List);
@@ -914,6 +1493,7 @@ Future<void> _requireAdmin(Request request) async {
   if ((user['role']?.toString() ?? 'student') != 'admin') {
     throw _AuthException('Admin access required', HttpStatus.forbidden);
   }
+  return userId;
 }
 
 Middleware _errorMiddleware() {

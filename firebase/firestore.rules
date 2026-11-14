@@ -2,62 +2,512 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ============================================================
+    // HELPER FUNCTIONS
+    // ============================================================
+
     function signedIn() {
       return request.auth != null;
     }
 
     function userDoc() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return get(
+        /databases/$(database)/documents/users/$(request.auth.uid)
+      );
     }
 
     function isAdmin() {
-      return signedIn() && userDoc().data.role == 'admin';
+      return signedIn()
+        && userDoc().data.role == 'admin';
     }
+
+    // Returns the current student's assigned room ID.
+    function userRoomId() {
+      return userDoc().data.roomId;
+    }
+
+
+    // ============================================================
+    // USERS
+    // ============================================================
 
     match /users/{userId} {
-      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+
+      // A user can read their own profile.
+      // Admins can read all users.
+      // Students can read other students in the same room.
+      allow read: if signedIn()
+        && (
+          request.auth.uid == userId
+          || isAdmin()
+          || (
+            resource.data.role == 'student'
+            && resource.data.roomId != null
+            && resource.data.roomId == userDoc().data.roomId
+            && userDoc().data.roomId != null
+          )
+        );
+
+      // Students can create only their own account
+      // and admins can provision student profiles.
       allow create: if signedIn()
-        && request.auth.uid == userId
-        && request.resource.data.role == 'student';
+        && request.resource.data.role == 'student'
+        && (
+          request.auth.uid == userId
+          || isAdmin()
+        );
+
+      // Admins can update anything.
+      //
+      // Students can only update their own basic profile fields.
+      // They cannot change role, roomId, or other protected fields.
       allow update: if isAdmin()
-        || (signedIn()
+        || (
+          signedIn()
           && request.auth.uid == userId
-          && request.resource.data.role == resource.data.role);
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.diff(resource.data)
+              .affectedKeys()
+              .hasOnly([
+                'name',
+                'phone',
+              ])
+        );
+
+      allow delete: if isAdmin();
+
+
+      // ==========================================================
+      // USER SETTINGS / ADMIN PREFERENCES
+      // ==========================================================
+
+      match /settings/{settingId} {
+
+        allow read, create, update, delete: if isAdmin()
+          && request.auth.uid == userId;
+      }
     }
+
+
+    // ============================================================
+    // CONTACTS
+    // ============================================================
 
     match /contacts/{docId} {
+
       allow create: if true;
+
       allow read, update, delete: if isAdmin();
     }
+
+
+    // ============================================================
+    // ADMISSIONS
+    // ============================================================
 
     match /admissions/{docId} {
+
       allow create: if true;
+
       allow read, update, delete: if isAdmin();
     }
 
+
+    // ============================================================
+    // HOSTELS
+    // ============================================================
+
     match /hostels/{docId} {
+
       allow read: if true;
+
       allow write: if isAdmin();
     }
 
-    match /rooms/{docId} {
-      allow read: if signedIn();
+
+    // ============================================================
+    // ROOMS
+    // ============================================================
+
+    match /rooms/{roomId} {
+
+      // Public page: visitors can browse available rooms without signing in.
+      allow read: if true;
+
       allow write: if isAdmin();
+
+
+      // ==========================================================
+      // ROOM OCCUPANTS
+      // ==========================================================
+
+      match /occupants/{userId} {
+
+        allow read: if isAdmin()
+          || (
+            signedIn()
+            && userRoomId() == roomId
+          );
+
+        allow create, update, delete: if isAdmin();
+      }
     }
+
+
+    // ============================================================
+    // COMPLAINTS
+    // ============================================================
 
     match /complaints/{docId} {
-      allow create: if signedIn()
-        && request.resource.data.userId == request.auth.uid;
+
+      // ----------------------------------------------------------
+// CREATE
+// ----------------------------------------------------------
+//
+// Students can create complaints only for themselves.
+//
+// The client cannot create an already-resolved/closed complaint
+// or impersonate another user.
+//
+// ----------------------------------------------------------
+allow create: if signedIn()
+  && request.resource.data.userId == request.auth.uid
+  && request.resource.data.status == 'open'
+  && request.resource.data.title is string
+  && request.resource.data.description is string;
+
+
+      // ----------------------------------------------------------
+      // READ
+      // ----------------------------------------------------------
+      //
+      // Students can read only their own complaints.
+      // Admins can read all complaints.
+      //
       allow read: if signedIn()
-        && (resource.data.userId == request.auth.uid || isAdmin());
+        && (
+          resource.data.userId == request.auth.uid
+          || isAdmin()
+        );
+
+
+      // ----------------------------------------------------------
+      // UPDATE
+      // ----------------------------------------------------------
+      //
+      // Admins can update complaints.
+      //
+      // Students can ONLY:
+      //
+      // 1. Reopen their own resolved/closed complaint.
+      //
+      // 2. Submit ONE rating and feedback after resolution.
+      //
+      allow update: if isAdmin()
+        || (
+          signedIn()
+          && resource.data.userId == request.auth.uid
+          && (
+
+            // ----------------------------------------------------
+            // REOPEN COMPLAINT
+            // ----------------------------------------------------
+            (
+              request.resource.data.diff(resource.data)
+                  .affectedKeys()
+                  .hasOnly([
+                    'status',
+                    'resolvedAt',
+                    'updatedAt',
+                  ])
+              && request.resource.data.status == 'open'
+              && request.resource.data.resolvedAt == null
+              && (
+                resource.data.status == 'resolved'
+                || resource.data.status == 'closed'
+              )
+            )
+
+            ||
+
+            // ----------------------------------------------------
+            // RATE / GIVE FEEDBACK
+            // ----------------------------------------------------
+            //
+            // A complaint can only be rated once.
+            //
+            (
+              request.resource.data.diff(resource.data)
+                  .affectedKeys()
+                  .hasOnly([
+                    'rating',
+                    'feedback',
+                    'ratedAt',
+                    'updatedAt',
+                  ])
+              && (
+                resource.data.status == 'resolved'
+                || resource.data.status == 'closed'
+              )
+              && resource.data.rating == null
+              && request.resource.data.rating is int
+              && request.resource.data.rating >= 1
+              && request.resource.data.rating <= 5
+              && request.resource.data.feedback is string
+              && request.resource.data.ratedAt != null
+            )
+          )
+        );
+
+
+      // ----------------------------------------------------------
+      // DELETE
+      // ----------------------------------------------------------
+      //
+      // Only admins can delete complaints.
+      //
+      allow delete: if isAdmin();
+
+
+      // ----------------------------------------------------------
+      // COMPLAINT TIMELINE
+      // ----------------------------------------------------------
+
+      match /timeline/{timelineId} {
+
+        // --------------------------------------------------------
+        // READ TIMELINE
+        // --------------------------------------------------------
+        //
+        // Students can read timeline events for their own
+        // complaint.
+        //
+        // Admins can read all timeline events.
+        //
+        allow read: if signedIn()
+          && (
+            get(
+              /databases/$(database)/documents/complaints/$(docId)
+            ).data.userId == request.auth.uid
+            || isAdmin()
+          );
+
+
+        // --------------------------------------------------------
+        // CREATE TIMELINE EVENT
+        // --------------------------------------------------------
+        //
+        // Admins can create timeline events for any complaint.
+        //
+        // Students can create ONLY the "reopened" event
+        // for their own complaint.
+        //
+        allow create: if isAdmin()
+          || (
+            signedIn()
+            && get(
+              /databases/$(database)/documents/complaints/$(docId)
+            ).data.userId == request.auth.uid
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.type == 'reopened'
+            && request.resource.data.status == 'open'
+          );
+
+
+        // --------------------------------------------------------
+        // UPDATE / DELETE TIMELINE
+        // --------------------------------------------------------
+        //
+        // Timeline events are immutable.
+        // Only admins can modify or delete them.
+        //
+        allow update, delete: if isAdmin();
+      }
+    }
+
+
+    // ============================================================
+    // CHECK-INS
+    // ============================================================
+
+    match /checkins/{docId} {
+
+      allow read: if signedIn()
+        && (
+          resource.data.userId == request.auth.uid
+          || isAdmin()
+        );
+
+      allow write: if isAdmin();
+    }
+
+
+    // ============================================================
+    // DUES / FEES
+    // ============================================================
+
+    match /dues/{docId} {
+
+      allow read: if signedIn()
+        && (
+          isAdmin()
+          || resource.data.studentId == request.auth.uid
+        );
+
+      allow create: if isAdmin()
+        || (
+          signedIn()
+          && request.auth.uid == request.resource.data.studentId
+          && request.resource.data.feeMonth is string
+          && docId == 'signup_' + request.auth.uid + '_'
+              + request.resource.data.feeMonth
+          && request.resource.data.amount == 5000
+          && request.resource.data.amountPaid == 0
+          && request.resource.data.remainingAmount == 5000
+          && request.resource.data.feeType == 'Hostel Fee'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.paid == false
+        );
+
       allow update: if isAdmin();
+
+      allow delete: if isAdmin();
+
+
+      // ==========================================================
+      // PAYMENT HISTORY
+      // ==========================================================
+
+      match /payments/{paymentId} {
+
+        allow read: if isAdmin()
+          || (
+            signedIn()
+            && resource.data.studentId == request.auth.uid
+          );
+
+        allow create: if isAdmin();
+
+        allow update, delete: if isAdmin();
+      }
+    }
+
+
+    // ============================================================
+    // TOP-LEVEL PAYMENTS
+    // ============================================================
+
+    match /payments/{paymentId} {
+
+      allow read: if isAdmin()
+        || (
+          signedIn()
+          && resource.data.studentId == request.auth.uid
+        );
+
+      allow create: if isAdmin();
+
+      allow update, delete: if isAdmin();
+    }
+
+
+    // ============================================================
+    // NOTICES
+    // ============================================================
+
+    match /notices/{docId} {
+
+      allow read: if signedIn();
+
+      allow write: if isAdmin();
+
+
+      // ==========================================================
+      // NOTICE READ / ACKNOWLEDGEMENT
+      // ==========================================================
+
+      match /readBy/{userId} {
+
+        allow read: if signedIn()
+          && (
+            request.auth.uid == userId
+            || isAdmin()
+          );
+
+        allow create: if signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.userId == request.auth.uid;
+
+        allow update: if signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.userId == request.auth.uid;
+
+        allow delete: if signedIn()
+          && (
+            request.auth.uid == userId
+            || isAdmin()
+          );
+      }
+    }
+
+
+    // ============================================================
+    // VISITORS
+    // ============================================================
+
+    match /visitors/{docId} {
+
+      allow read: if signedIn();
+
+      allow write: if isAdmin();
+    }
+
+    // Immutable audit trail for administrative changes.
+    match /activityLogs/{activityId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+
+    // ============================================================
+    // ATTENDANCE
+    // ============================================================
+
+    match /attendance/{attendanceId} {
+
+      allow read: if signedIn()
+        && (
+          isAdmin()
+          || resource.data.userId == request.auth.uid
+          || resource.data.studentId == request.auth.uid
+        );
+
+      allow create: if signedIn();
+
+      allow update, delete: if isAdmin();
+    }
+
+
+    // ============================================================
+    // GLOBAL APPLICATION SETTINGS
+    // ============================================================
+
+    match /settings/{settingId} {
+
+      allow read: if isAdmin();
+
+      allow create: if isAdmin();
+
+      allow update: if isAdmin();
+
       allow delete: if isAdmin();
     }
 
-    match /checkins/{docId} {
-      allow read: if signedIn()
-        && (resource.data.userId == request.auth.uid || isAdmin());
-      allow write: if isAdmin();
-    }
+
+    // ============================================================
+    // DEFAULT DENY
+    // ============================================================
+
   }
 }

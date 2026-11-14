@@ -16,7 +16,7 @@ class MessFacilityPage extends StatelessWidget {
           SizedBox(
             height: 220,
             width: double.infinity,
-            child: Image.asset('assets/images/hero_3.jpg', fit: BoxFit.cover),
+            child: Image.asset('assets/images/hero_3.webp', fit: BoxFit.cover),
           ),
           Padding(
             padding: const EdgeInsets.all(16),
@@ -47,7 +47,7 @@ class MessFacilityPage extends StatelessWidget {
                 const SizedBox(height: 12),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.asset('assets/images/food-1.jpg', fit: BoxFit.cover),
+                  child: Image.asset('assets/images/mess.webp', fit: BoxFit.cover),
                 ),
               ],
             ),

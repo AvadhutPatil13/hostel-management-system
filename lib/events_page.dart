@@ -19,7 +19,7 @@ class EventsPage extends StatelessWidget {
             'Cultural Club',
             'Jagannath Hostel, Devi Hostel ..',
             'Opportunities abound to join groups that celebrate racial, ethnic, and cultural heritages of every kind.',
-            'assets/images/cul.png',
+            'assets/images/cul.webp',
           ),
           _buildEventCard(
             context,
@@ -27,7 +27,7 @@ class EventsPage extends StatelessWidget {
             'Political Club',
             'East Hostel, New Hostel...',
             'A political club can give you the platform to confront issues that are important to you, to support a candidate who shares your political views, or to connect with like-minded students and professors.',
-            'assets/images/pol.jpg',
+            'assets/images/pol.webp',
           ),
           _buildEventCard(
             context,
@@ -35,7 +35,7 @@ class EventsPage extends StatelessWidget {
             'Academic Club',
             'Lalitgiri Hostel, Devi Hostel...',
             'Academic clubs are among the most popular on campus. They are usually based on an area of study.',
-            'assets/images/devi.jpg',
+            'assets/images/devi.webp',
           ),
           _buildEventCard(
             context,
@@ -43,7 +43,7 @@ class EventsPage extends StatelessWidget {
             'Sports Club',
             'West Hostel, East Hostel...',
             'Campuses offers clubs and intramural activities in an enormous range of sports. Club sports are usually not regulated by the rules of the NCAA.',
-            'assets/images/acc.jpg',
+            'assets/images/acc.webp',
           ),
           _buildEventCard(
             context,
@@ -51,7 +51,7 @@ class EventsPage extends StatelessWidget {
             'Happiness Club',
             'Devi Hostel, Mahanadi Hostel',
             'There have been a ton of studies out there about how to be happier, and a lot of it seems to involve being with others who share your interests.',
-            'assets/images/daya.jpg',
+            'assets/images/daya.webp',
           ),
           _buildEventCard(
             context,
@@ -59,7 +59,7 @@ class EventsPage extends StatelessWidget {
             'Re-Enactment Club',
             'Devi Hostel, Daya Hostel...',
             'History majors (and enthusiasts) will love playing dress-up and recreating historical moments to the finest details.',
-            'assets/images/girls.jpg',
+            'assets/images/girls.webp',
           ),
         ],
       ),

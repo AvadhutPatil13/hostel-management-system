@@ -37,7 +37,6 @@ class DefaultFirebaseOptions {
     messagingSenderId: '28247779916',
     projectId: 'rit-hostel-app-b1a1c',
     authDomain: 'rit-hostel-app-b1a1c.firebaseapp.com',
-    storageBucket: 'rit-hostel-app-b1a1c.firebasestorage.app',
     measurementId: 'G-HVT3LZ65Z0',
   );
 
@@ -46,6 +45,5 @@ class DefaultFirebaseOptions {
     appId: '1:28247779916:android:8d44b433a874611129a2e9',
     messagingSenderId: '28247779916',
     projectId: 'rit-hostel-app-b1a1c',
-    storageBucket: 'rit-hostel-app-b1a1c.firebasestorage.app',
   );
 }

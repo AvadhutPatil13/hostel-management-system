@@ -52,7 +52,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
               background: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Image.asset('assets/images/sliderjj.jpg', fit: BoxFit.cover),
+                  Image.asset('assets/images/sliderjj.webp', fit: BoxFit.cover),
                   Container(color: Colors.black45),
                   Center(
                     child: Padding(
@@ -154,8 +154,8 @@ class _RegistrationPageState extends State<RegistrationPage> {
                                         border: OutlineInputBorder(),
                                       ),
                                       items: const [
-                                        DropdownMenuItem(value: 'Boys', child: Text('Boys')),
-                                        DropdownMenuItem(value: 'Girls', child: Text('Girls')),
+                                        DropdownMenuItem(value: 'Male', child: Text('Male')),
+                                        DropdownMenuItem(value: 'Female', child: Text('Female')),
                                       ],
                                       onChanged: (v) => setState(() => _gender = v),
                                       validator: (v) => v == null ? 'Select gender' : null,
@@ -257,7 +257,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
                       ),
                     ),
                   ),
-                  if (MediaQuery.sizeOf(context).width >= 600) ...[
+                  if (MediaQuery.of(context).size.width >= 600) ...[
                     const SizedBox(width: 16),
                     Expanded(
                       flex: 5,
@@ -268,7 +268,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
               ),
             ),
           ),
-          if (MediaQuery.sizeOf(context).width < 600)
+          if (MediaQuery.of(context).size.width < 600)
             const SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.fromLTRB(16, 0, 16, 32),
